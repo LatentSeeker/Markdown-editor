@@ -4,6 +4,8 @@
 
 Markdown Studio 是一款极简、优雅且功能强大的原生 Web 端 Markdown 编辑器。它拥有精心设计的排版系统，完美支持数学公式、数据表格和多端适配，并具备智能的分页截断算法，能够一键导出高质量的图片和 PDF 文件。
 
+## [使用在线markdown编辑器](https://latentseeker.github.io/Markdown-editor/)
+---
 > **💡 免配置、纯原生：** 本项目完全基于原生 HTML/CSS/JavaScript 构建，无需安装繁重的 Node.js 环境或前端框架，开箱即用。
 
 ---
