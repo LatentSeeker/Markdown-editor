@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Markdown Studio</title>
+    <link rel="stylesheet" href="./vendor/katex/katex.min.css" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark">M</span>
+          <div>
+            <h1>Markdown Studio</h1>
+            <p id="docStats">0 字 · 0 行</p>
+          </div>
+        </div>
+        <div class="actions" aria-label="导出操作">
+          <button class="ghost-button" type="button" id="clearButton">清空</button>
+          <button class="solid-button" type="button" id="imageButton">导出图片</button>
+          <button class="solid-button accent" type="button" id="pdfButton">导出 PDF</button>
+          <button class="ghost-button" type="button" id="printButton">打印</button>
+        </div>
+      </header>
+
+      <section class="workspace" aria-label="Markdown 编辑器">
+        <section class="pane editor-pane">
+          <div class="pane-head">
+            <h2>编辑</h2>
+            <div class="tool-row" aria-label="编辑工具">
+              <button type="button" data-wrap="**" title="加粗">B</button>
+              <button type="button" data-wrap="*" title="斜体">I</button>
+              <button type="button" data-wrap="`" title="行内代码">&lt;/&gt;</button>
+              <button type="button" data-wrap="$" title="行内公式">Σ</button>
+              <button type="button" data-prefix="- " title="列表">•</button>
+              <button type="button" data-prefix="> " title="引用">”</button>
+            </div>
+          </div>
+          <textarea id="editor" spellcheck="false" aria-label="Markdown 文本"></textarea>
+        </section>
+
+        <section class="pane preview-pane">
+          <div class="pane-head">
+            <h2>预览</h2>
+            <label class="toggle">
+              <input type="checkbox" id="paperToggle" checked />
+              <span>纸张</span>
+            </label>
+          </div>
+          <div class="preview-stage">
+            <article id="preview" class="document paper"></article>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <script src="./vendor/katex/katex.min.js"></script>
+    <script src="./vendor/html-to-image/html-to-image.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>
