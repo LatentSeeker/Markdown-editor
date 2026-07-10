@@ -3,8 +3,11 @@ const preview = document.querySelector("#preview");
 const docStats = document.querySelector("#docStats");
 const toast = document.querySelector("#toast");
 const paperToggle = document.querySelector("#paperToggle");
+const styleSelect = document.querySelector("#styleSelect");
+const fileInput = document.querySelector("#fileInput");
 
 const STORAGE_KEY = "markdown-studio-content";
+const STYLE_KEY = "markdown-studio-style";
 const PDF_PAGE_WIDTH = 595.28;
 const PDF_PAGE_HEIGHT = 841.89;
 const PDF_MARGIN = 36;
@@ -15,11 +18,16 @@ const starter = `# 项目周报
 
 > 本周重点：把计划、进度和风险写清楚，让读者可以快速抓住状态。
 
+[TOC]
+
 ## 已完成
 
-- 完成 Markdown 编辑器原型
-- 支持 **实时预览**、表格、代码块和引用
-- 可以导出为图片或 PDF
+- [x] 完成 Markdown 编辑器原型
+- [x] 支持 **实时预览**、表格、代码块和引用
+- [ ] 补充项目截图与交付说明
+
+> [!TIP] 写作提示
+> 使用目录、脚注和提示块，可以让长文档更容易浏览。
 
 ## 数据表
 
@@ -27,6 +35,8 @@ const starter = `# 项目周报
 | --- | --- | --- |
 | 编辑器 | 完成 | Alice |
 | 导出 | 进行中 | Bob |
+
+表格支持左、中、右对齐，正文也支持 ~~删除内容~~ 和 ==重点标记==。
 
 ## 数学公式
 
@@ -48,6 +58,8 @@ $$
 
 更多符号：$\\mathbb{R}, \\mathcal{F}, \\vec{x}, \\binom{n}{k}, A \\subseteq B \\Rightarrow x \\in A \\cup B$。
 
+公式由 KaTeX 完整排版，并会保留到图片和 PDF 中。[^katex]
+
 ## 代码片段
 
 \`\`\`js
@@ -61,6 +73,8 @@ function greet(name) {
 1. 补充真实内容
 2. 调整版式细节
 3. 导出交付文件
+
+[^katex]: 行内公式与块级公式都使用本地 KaTeX 字体，不依赖网络。
 `;
 
 editor.value = localStorage.getItem(STORAGE_KEY) || starter;
@@ -80,7 +94,7 @@ function escapeAttr(value) {
 
 function sanitizeUrl(value) {
   const trimmed = value.trim();
-  if (/^(https?:|mailto:|#|\/)/i.test(trimmed)) return trimmed;
+  if (/^(https?:|mailto:|#|\/|\.{1,2}\/)/i.test(trimmed)) return trimmed;
   return "#";
 }
 
@@ -752,10 +766,79 @@ function renderMathExpression(source, display = false) {
   return `<span class="${className}" data-math-source="${escapeAttr(source)}">${parser.parse()}</span>`;
 }
 
-function inlineMarkdown(value) {
+function inlineText(value) {
+  return value
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/[`*_~=$]/g, "")
+    .trim();
+}
+
+function makeSlug(value, usedSlugs) {
+  const base = inlineText(value)
+    .toLocaleLowerCase()
+    .replace(/[^\p{L}\p{N}\s-]/gu, "")
+    .trim()
+    .replace(/\s+/g, "-") || "section";
+  const count = usedSlugs.get(base) || 0;
+  usedSlugs.set(base, count + 1);
+  return count ? `${base}-${count + 1}` : base;
+}
+
+function createRenderContext(markdown) {
+  const footnotes = new Map();
+  const contentLines = [];
+  const lines = markdown.replace(/\r\n?/g, "\n").split("\n");
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const definition = lines[index].match(/^\[\^([^\]]+)]\s*:\s*(.*)$/);
+    if (!definition) {
+      contentLines.push(lines[index]);
+      continue;
+    }
+
+    const body = [definition[2]];
+    while (index + 1 < lines.length && /^(?: {2,}|\t)\S/.test(lines[index + 1])) {
+      body.push(lines[index + 1].trim());
+      index += 1;
+    }
+    footnotes.set(definition[1], body.join(" "));
+  }
+
+  const usedSlugs = new Map();
+  const headings = [];
+  let inCode = false;
+  contentLines.forEach((line, index) => {
+    if (/^```/.test(line.trim())) {
+      inCode = !inCode;
+      return;
+    }
+    if (inCode) return;
+
+    const atx = line.match(/^(#{1,6})\s+(.+?)\s*#*$/);
+    const setext = index + 1 < contentLines.length && contentLines[index + 1].match(/^\s*(=+|-+)\s*$/);
+    if (!atx && !setext) return;
+
+    const level = atx ? atx[1].length : setext[1][0] === "=" ? 1 : 2;
+    const source = atx ? atx[2] : line.trim();
+    headings.push({ level, source, text: inlineText(source), id: makeSlug(source, usedSlugs) });
+  });
+
+  return {
+    content: contentLines.join("\n"),
+    footnotes,
+    headings,
+    headingIndex: 0,
+    usedFootnotes: [],
+  };
+}
+
+function inlineMarkdown(value, context) {
   let html = value;
   const codeSpans = [];
   const mathSpans = [];
+  const imageSpans = [];
+  const footnoteSpans = [];
 
   html = html.replace(/`([^`]+)`/g, (_, code) => {
     codeSpans.push(`<code>${escapeHtml(code)}</code>`);
@@ -767,6 +850,25 @@ function inlineMarkdown(value) {
     return `${prefix}\u0000MATH${mathSpans.length - 1}\u0000`;
   });
 
+  html = html.replace(/!\[([^\]]*)]\(([^)\s]+)(?:\s+["']([^"']+)["'])?\)/g, (_, alt, url, title) => {
+    const safeUrl = escapeAttr(sanitizeUrl(url));
+    const titleAttr = title ? ` title="${escapeAttr(title)}"` : "";
+    imageSpans.push(`<span class="markdown-image"><img src="${safeUrl}" alt="${escapeAttr(
+      alt,
+    )}"${titleAttr} loading="lazy">${title ? `<span class="image-caption">${escapeHtml(title)}</span>` : ""}</span>`);
+    return `\u0000IMAGE${imageSpans.length - 1}\u0000`;
+  });
+
+  html = html.replace(/\[\^([^\]]+)]/g, (match, id) => {
+    if (!context?.footnotes.has(id)) return match;
+    if (!context.usedFootnotes.includes(id)) context.usedFootnotes.push(id);
+    const number = context.usedFootnotes.indexOf(id) + 1;
+    footnoteSpans.push(`<sup class="footnote-ref"><a href="#fn-${escapeAttr(id)}" id="fnref-${
+      escapeAttr(id)
+    }">${number}</a></sup>`);
+    return `\u0000FOOTNOTE${footnoteSpans.length - 1}\u0000`;
+  });
+
   html = escapeHtml(html);
 
   html = html.replace(/\[([^\]]+)]\(([^)]+)\)/g, (_, label, url) => {
@@ -775,12 +877,19 @@ function inlineMarkdown(value) {
   });
 
   html = html
+    .replace(/&lt;(https?:\/\/[^&]+)&gt;/g, '<a href="$1" target="_blank" rel="noreferrer">$1</a>')
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/\*([^*]+)\*/g, "<em>$1</em>");
+    .replace(/__([^_]+)__/g, "<strong>$1</strong>")
+    .replace(/~~([^~]+)~~/g, "<del>$1</del>")
+    .replace(/==([^=]+)==/g, "<mark>$1</mark>")
+    .replace(/\*([^*]+)\*/g, "<em>$1</em>")
+    .replace(/(^|[^\w])_([^_]+)_($|[^\w])/g, "$1<em>$2</em>$3");
 
   return html
     .replace(/\u0000MATH(\d+)\u0000/g, (_, index) => mathSpans[Number(index)])
-    .replace(/\u0000CODE(\d+)\u0000/g, (_, index) => codeSpans[Number(index)]);
+    .replace(/\u0000CODE(\d+)\u0000/g, (_, index) => codeSpans[Number(index)])
+    .replace(/\u0000IMAGE(\d+)\u0000/g, (_, index) => imageSpans[Number(index)])
+    .replace(/\u0000FOOTNOTE(\d+)\u0000/g, (_, index) => footnoteSpans[Number(index)]);
 }
 
 function isTableDivider(line) {
@@ -799,6 +908,8 @@ function splitTableRow(line) {
 function isBlockStart(line, nextLine = "") {
   return (
     /^#{1,6}\s+/.test(line) ||
+    /^\[toc]$/i.test(line.trim()) ||
+    (line.trim() && /^\s*(=+|-+)\s*$/.test(nextLine)) ||
     /^>\s?/.test(line) ||
     /^([-*_])\s*\1\s*\1\s*$/.test(line) ||
     /^(\s*)([-*+])\s+/.test(line) ||
@@ -809,28 +920,44 @@ function isBlockStart(line, nextLine = "") {
   );
 }
 
-function renderList(lines, start) {
+function renderList(lines, start, context) {
   const ordered = /^\s*\d+\.\s+/.test(lines[start]);
   const tag = ordered ? "ol" : "ul";
   const items = [];
+  let hasTasks = false;
   let index = start;
 
   while (index < lines.length) {
     const line = lines[index];
     const match = ordered ? line.match(/^\s*\d+\.\s+(.*)$/) : line.match(/^\s*[-*+]\s+(.*)$/);
     if (!match) break;
-    items.push(`<li>${inlineMarkdown(match[1])}</li>`);
+    const task = match[1].match(/^\[([ xX])]\s+(.*)$/);
+    if (task) {
+      hasTasks = true;
+      const checked = task[1].toLowerCase() === "x";
+      items.push(`<li class="task-item"><input type="checkbox" ${checked ? "checked " : ""}disabled><span>${inlineMarkdown(
+        task[2],
+        context,
+      )}</span></li>`);
+    } else {
+      items.push(`<li>${inlineMarkdown(match[1], context)}</li>`);
+    }
     index += 1;
   }
 
   return {
-    html: `<${tag}>${items.join("")}</${tag}>`,
+    html: `<${tag}${hasTasks ? ' class="task-list"' : ""}>${items.join("")}</${tag}>`,
     next: index,
   };
 }
 
-function renderTable(lines, start) {
+function renderTable(lines, start, context) {
   const headers = splitTableRow(lines[start]);
+  const alignments = splitTableRow(lines[start + 1]).map((cell) => {
+    const left = cell.startsWith(":");
+    const right = cell.endsWith(":");
+    return left && right ? "center" : right ? "right" : "left";
+  });
   let index = start + 2;
   const rows = [];
 
@@ -839,19 +966,53 @@ function renderTable(lines, start) {
     index += 1;
   }
 
-  const headerHtml = headers.map((cell) => `<th>${inlineMarkdown(cell)}</th>`).join("");
+  const headerHtml = headers
+    .map((cell, cellIndex) => `<th style="text-align:${alignments[cellIndex] || "left"}">${inlineMarkdown(cell, context)}</th>`)
+    .join("");
   const bodyHtml = rows
-    .map((row) => `<tr>${row.map((cell) => `<td>${inlineMarkdown(cell)}</td>`).join("")}</tr>`)
+    .map(
+      (row) =>
+        `<tr>${row
+          .map(
+            (cell, cellIndex) =>
+              `<td style="text-align:${alignments[cellIndex] || "left"}">${inlineMarkdown(cell, context)}</td>`,
+          )
+          .join("")}</tr>`,
+    )
     .join("");
 
   return {
-    html: `<table><thead><tr>${headerHtml}</tr></thead><tbody>${bodyHtml}</tbody></table>`,
+    html: `<div class="table-scroll"><table><thead><tr>${headerHtml}</tr></thead><tbody>${bodyHtml}</tbody></table></div>`,
     next: index,
   };
 }
 
-function renderMarkdown(markdown) {
-  const lines = markdown.replace(/\r\n?/g, "\n").split("\n");
+function renderToc(context) {
+  if (!context.headings.length) return "";
+  return `<nav class="toc" aria-label="目录"><div class="toc-title">目录</div><ol>${context.headings
+    .map(
+      (heading) =>
+        `<li class="toc-level-${heading.level}"><a href="#${escapeAttr(heading.id)}">${escapeHtml(heading.text)}</a></li>`,
+    )
+    .join("")}</ol></nav>`;
+}
+
+function renderFootnotes(context) {
+  if (!context.usedFootnotes.length) return "";
+  return `<section class="footnotes"><ol>${context.usedFootnotes
+    .map(
+      (id) =>
+        `<li id="fn-${escapeAttr(id)}">${inlineMarkdown(context.footnotes.get(id), context)} <a class="footnote-back" href="#fnref-${
+          escapeAttr(id)
+        }" aria-label="返回正文">↩</a></li>`,
+    )
+    .join("")}</ol></section>`;
+}
+
+function renderMarkdown(markdown, context = null, isRoot = true) {
+  const renderContext = context || createRenderContext(markdown);
+  const source = context ? markdown : renderContext.content;
+  const lines = source.replace(/\r\n?/g, "\n").split("\n");
   const blocks = [];
   let index = 0;
 
@@ -875,7 +1036,7 @@ function renderMarkdown(markdown) {
       }
       if (index < lines.length) index += 1;
       blocks.push(
-        `<pre><code data-language="${escapeAttr(language)}">${escapeHtml(code.join("\n"))}</code></pre>`,
+        `<pre data-language="${escapeAttr(language || "text")}"><code>${escapeHtml(code.join("\n"))}</code></pre>`,
       );
       continue;
     }
@@ -909,7 +1070,28 @@ function renderMarkdown(markdown) {
     const heading = line.match(/^(#{1,6})\s+(.*)$/);
     if (heading) {
       const level = heading[1].length;
-      blocks.push(`<h${level}>${inlineMarkdown(heading[2])}</h${level}>`);
+      const meta = renderContext.headings[renderContext.headingIndex++];
+      blocks.push(`<h${level} id="${escapeAttr(meta?.id || makeSlug(heading[2], new Map()))}">${inlineMarkdown(
+        heading[2].replace(/\s+#+\s*$/, ""),
+        renderContext,
+      )}</h${level}>`);
+      index += 1;
+      continue;
+    }
+
+    if (nextLine && /^\s*(=+|-+)\s*$/.test(nextLine) && trimmed) {
+      const level = nextLine.trim()[0] === "=" ? 1 : 2;
+      const meta = renderContext.headings[renderContext.headingIndex++];
+      blocks.push(`<h${level} id="${escapeAttr(meta?.id || makeSlug(trimmed, new Map()))}">${inlineMarkdown(
+        trimmed,
+        renderContext,
+      )}</h${level}>`);
+      index += 2;
+      continue;
+    }
+
+    if (/^\[toc]$/i.test(trimmed)) {
+      blocks.push(renderToc(renderContext));
       index += 1;
       continue;
     }
@@ -921,14 +1103,14 @@ function renderMarkdown(markdown) {
     }
 
     if (line.includes("|") && isTableDivider(nextLine)) {
-      const table = renderTable(lines, index);
+      const table = renderTable(lines, index, renderContext);
       blocks.push(table.html);
       index = table.next;
       continue;
     }
 
     if (/^\s*([-*+])\s+/.test(line) || /^\s*\d+\.\s+/.test(line)) {
-      const list = renderList(lines, index);
+      const list = renderList(lines, index, renderContext);
       blocks.push(list.html);
       index = list.next;
       continue;
@@ -940,7 +1122,17 @@ function renderMarkdown(markdown) {
         quote.push(lines[index].replace(/^>\s?/, ""));
         index += 1;
       }
-      blocks.push(`<blockquote>${renderMarkdown(quote.join("\n"))}</blockquote>`);
+      const callout = quote[0]?.match(/^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)]\s*(.*)$/i);
+      if (callout) {
+        const kind = callout[1].toLowerCase();
+        const labels = { note: "说明", tip: "提示", important: "重要", warning: "注意", caution: "警告" };
+        const title = callout[2] || labels[kind];
+        blocks.push(`<aside class="callout callout-${kind}"><div class="callout-title">${escapeHtml(
+          title,
+        )}</div>${renderMarkdown(quote.slice(1).join("\n"), renderContext, false)}</aside>`);
+      } else {
+        blocks.push(`<blockquote>${renderMarkdown(quote.join("\n"), renderContext, false)}</blockquote>`);
+      }
       continue;
     }
 
@@ -949,17 +1141,38 @@ function renderMarkdown(markdown) {
       paragraph.push(lines[index].trim());
       index += 1;
     }
-    blocks.push(`<p>${inlineMarkdown(paragraph.join(" "))}</p>`);
+    const withBreaks = paragraph
+      .map((part) => inlineMarkdown(part.replace(/(?: {2}|\\)$/, ""), renderContext))
+      .map((part, partIndex) => `${part}${partIndex < paragraph.length - 1 && /(?: {2}|\\)$/.test(paragraph[partIndex]) ? "<br>" : " "}`)
+      .join("")
+      .trim();
+    blocks.push(`<p>${withBreaks}</p>`);
   }
 
-  return blocks.join("\n");
+  if (isRoot) blocks.push(renderFootnotes(renderContext));
+  return blocks.filter(Boolean).join("\n");
 }
 
 function updateStats() {
   const text = editor.value;
   const chars = Array.from(text.replace(/\s/g, "")).length;
   const lines = text ? text.split(/\r\n|\r|\n/).length : 0;
-  docStats.textContent = `${chars} 字 · ${lines} 行`;
+  const words = (text.match(/[A-Za-z0-9]+(?:['’-][A-Za-z0-9]+)*/g) || []).length;
+  const readingMinutes = Math.max(1, Math.ceil((chars + words * 2) / 500));
+  docStats.textContent = `${chars} 字 · ${lines} 行 · 约 ${readingMinutes} 分钟`;
+}
+
+function fitWideMath() {
+  preview.querySelectorAll(".math-display .katex-display").forEach((display) => {
+    const katex = display.querySelector(":scope > .katex");
+    if (!katex || display.clientWidth <= 0) return;
+    katex.style.fontSize = "";
+    const available = display.clientWidth;
+    const actual = katex.getBoundingClientRect().width;
+    if (actual > available) {
+      katex.style.fontSize = `${Math.max(0.72, available / actual)}em`;
+    }
+  });
 }
 
 function updatePreview() {
@@ -969,6 +1182,7 @@ function updatePreview() {
     : '<div class="empty-state">开始输入 Markdown</div>';
   updateStats();
   localStorage.setItem(STORAGE_KEY, editor.value);
+  fitWideMath();
 }
 
 function showToast(message) {
@@ -980,26 +1194,80 @@ function showToast(message) {
   }, 2400);
 }
 
-function applySelectionTransform({ wrap, prefix }) {
+function replaceSelection(before, after, placeholder = "文本") {
   const start = editor.selectionStart;
   const end = editor.selectionEnd;
-  const selected = editor.value.slice(start, end);
+  const selected = editor.value.slice(start, end) || placeholder;
+  const replacement = `${before}${selected}${after}`;
+  editor.setRangeText(replacement, start, end, "end");
+  editor.setSelectionRange(start + before.length, start + before.length + selected.length);
+}
 
-  if (wrap) {
-    editor.setRangeText(`${wrap}${selected || "文本"}${wrap}`, start, end, "select");
-  }
+function prefixSelectedLines(prefix) {
+  const start = editor.selectionStart;
+  const end = editor.selectionEnd;
+  const lineStart = editor.value.lastIndexOf("\n", start - 1) + 1;
+  const endProbe = end > start ? end - 1 : start;
+  const lineEndIndex = editor.value.indexOf("\n", endProbe);
+  const lineEnd = lineEndIndex === -1 ? editor.value.length : lineEndIndex;
+  const block = editor.value
+    .slice(lineStart, lineEnd)
+    .split("\n")
+    .map((line) => `${prefix}${line}`)
+    .join("\n");
+  editor.setRangeText(block, lineStart, lineEnd, "select");
+}
 
-  if (prefix) {
-    const before = editor.value.slice(0, start);
-    const lineStart = before.lastIndexOf("\n") + 1;
-    const targetEnd = selected ? end : start;
-    const block = editor.value
-      .slice(lineStart, targetEnd)
-      .split("\n")
-      .map((line) => `${prefix}${line}`)
-      .join("\n");
-    editor.setRangeText(block, lineStart, targetEnd, "select");
-  }
+function insertTemplate(template, placeholder = "内容") {
+  const start = editor.selectionStart;
+  const end = editor.selectionEnd;
+  const selected = editor.value.slice(start, end) || placeholder;
+  const marker = "{{selection}}";
+  const replacement = template.replace(marker, selected);
+  const selectionOffset = replacement.indexOf(selected);
+  editor.setRangeText(replacement, start, end, "end");
+  editor.setSelectionRange(start + selectionOffset, start + selectionOffset + selected.length);
+}
+
+function toggleHeading() {
+  const start = editor.selectionStart;
+  const lineStart = editor.value.lastIndexOf("\n", start - 1) + 1;
+  const lineEndIndex = editor.value.indexOf("\n", start);
+  const lineEnd = lineEndIndex === -1 ? editor.value.length : lineEndIndex;
+  const line = editor.value.slice(lineStart, lineEnd);
+  const heading = line.match(/^(#{1,6})\s+(.*)$/);
+  const replacement = heading
+    ? heading[1].length === 6
+      ? heading[2]
+      : `${"#".repeat(heading[1].length + 1)} ${heading[2]}`
+    : `## ${line || "标题"}`;
+  editor.setRangeText(replacement, lineStart, lineEnd, "end");
+}
+
+const toolbarActions = {
+  heading: toggleHeading,
+  bold: () => replaceSelection("**", "**"),
+  italic: () => replaceSelection("*", "*"),
+  strike: () => replaceSelection("~~", "~~"),
+  code: () => replaceSelection("`", "`", "code"),
+  math: () => replaceSelection("$", "$", "E = mc^2"),
+  link: () => insertTemplate("[{{selection}}](https://example.com)", "链接文字"),
+  image: () => insertTemplate("![{{selection}}](https://example.com/image.jpg)", "图片说明"),
+  bullet: () => prefixSelectedLines("- "),
+  task: () => prefixSelectedLines("- [ ] "),
+  quote: () => prefixSelectedLines("> "),
+  codeblock: () => insertTemplate("```js\n{{selection}}\n```", "console.log('Hello');"),
+  table: () =>
+    insertTemplate(
+      "| 项目 | 说明 | 状态 |\n| :--- | :--- | ---: |\n| {{selection}} | 示例内容 | 完成 |\n| 第二项 | 示例内容 | 进行中 |",
+      "第一项",
+    ),
+};
+
+function applyToolbarAction(action) {
+  const handler = toolbarActions[action];
+  if (!handler) return;
+  handler();
 
   editor.focus();
   updatePreview();
@@ -1833,13 +2101,43 @@ async function exportPdf() {
 
 editor.addEventListener("input", updatePreview);
 
-document.querySelectorAll(".tool-row button").forEach((button) => {
+document.querySelectorAll(".tool-row [data-action]").forEach((button) => {
   button.addEventListener("click", () => {
-    applySelectionTransform({
-      wrap: button.dataset.wrap,
-      prefix: button.dataset.prefix,
-    });
+    applyToolbarAction(button.dataset.action);
   });
+});
+
+document.querySelectorAll(".view-switch button").forEach((button) => {
+  button.addEventListener("click", () => {
+    document.querySelector(".workspace").dataset.view = button.dataset.view;
+    document.querySelectorAll(".view-switch button").forEach((item) => {
+      item.classList.toggle("active", item === button);
+    });
+    fitWideMath();
+  });
+});
+
+document.querySelector("#openButton").addEventListener("click", () => fileInput.click());
+
+fileInput.addEventListener("change", () => {
+  const [file] = fileInput.files;
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    editor.value = String(reader.result || "");
+    updatePreview();
+    editor.focus();
+    showToast(`已打开 ${file.name}`);
+  };
+  reader.onerror = () => showToast("文件读取失败");
+  reader.readAsText(file, "UTF-8");
+  fileInput.value = "";
+});
+
+document.querySelector("#saveButton").addEventListener("click", () => {
+  const blob = new Blob([editor.value], { type: "text/markdown;charset=utf-8" });
+  downloadBlob(blob, `markdown-${timestamp()}.md`);
+  showToast("Markdown 已保存");
 });
 
 document.querySelector("#clearButton").addEventListener("click", () => {
@@ -1866,11 +2164,28 @@ paperToggle.addEventListener("change", () => {
   preview.classList.toggle("paper", paperToggle.checked);
 });
 
+styleSelect.value = localStorage.getItem(STYLE_KEY) || "editorial";
+preview.dataset.style = styleSelect.value;
+styleSelect.addEventListener("change", () => {
+  preview.dataset.style = styleSelect.value;
+  localStorage.setItem(STYLE_KEY, styleSelect.value);
+  fitWideMath();
+});
+
 editor.addEventListener("keydown", (event) => {
-  if (event.key !== "Tab") return;
-  event.preventDefault();
-  editor.setRangeText("  ", editor.selectionStart, editor.selectionEnd, "end");
-  updatePreview();
+  const shortcut = event.ctrlKey || event.metaKey;
+  if (shortcut && !event.shiftKey && ["b", "i", "k"].includes(event.key.toLowerCase())) {
+    event.preventDefault();
+    const actions = { b: "bold", i: "italic", k: "link" };
+    applyToolbarAction(actions[event.key.toLowerCase()]);
+    return;
+  }
+
+  if (event.key === "Tab") {
+    event.preventDefault();
+    editor.setRangeText("  ", editor.selectionStart, editor.selectionEnd, "end");
+    updatePreview();
+  }
 });
 
 updatePreview();

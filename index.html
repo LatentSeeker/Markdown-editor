@@ -17,7 +17,14 @@
             <p id="docStats">0 字 · 0 行</p>
           </div>
         </div>
+        <div class="view-switch" aria-label="工作区视图">
+          <button type="button" class="active" data-view="split" title="双栏视图">双栏</button>
+          <button type="button" data-view="editor" title="专注编辑">编辑</button>
+          <button type="button" data-view="preview" title="专注预览">预览</button>
+        </div>
         <div class="actions" aria-label="导出操作">
+          <button class="ghost-button" type="button" id="openButton" title="打开 Markdown 文件">打开</button>
+          <button class="ghost-button" type="button" id="saveButton" title="保存 Markdown 文件">保存</button>
           <button class="ghost-button" type="button" id="clearButton">清空</button>
           <button class="solid-button" type="button" id="imageButton">导出图片</button>
           <button class="solid-button accent" type="button" id="pdfButton">导出 PDF</button>
@@ -30,12 +37,21 @@
           <div class="pane-head">
             <h2>编辑</h2>
             <div class="tool-row" aria-label="编辑工具">
-              <button type="button" data-wrap="**" title="加粗">B</button>
-              <button type="button" data-wrap="*" title="斜体">I</button>
-              <button type="button" data-wrap="`" title="行内代码">&lt;/&gt;</button>
-              <button type="button" data-wrap="$" title="行内公式">Σ</button>
-              <button type="button" data-prefix="- " title="列表">•</button>
-              <button type="button" data-prefix="> " title="引用">”</button>
+              <button type="button" data-action="heading" title="标题">H</button>
+              <button type="button" data-action="bold" title="加粗 (Ctrl+B)">B</button>
+              <button type="button" data-action="italic" title="斜体 (Ctrl+I)"><i>I</i></button>
+              <button type="button" data-action="strike" title="删除线"><s>S</s></button>
+              <span class="tool-divider" aria-hidden="true"></span>
+              <button type="button" data-action="link" title="链接 (Ctrl+K)">↗</button>
+              <button type="button" data-action="image" title="图片">▧</button>
+              <button type="button" data-action="code" title="行内代码">&lt;/&gt;</button>
+              <button type="button" data-action="math" title="行内公式">Σ</button>
+              <span class="tool-divider" aria-hidden="true"></span>
+              <button type="button" data-action="bullet" title="无序列表">•</button>
+              <button type="button" data-action="task" title="任务列表">☑</button>
+              <button type="button" data-action="quote" title="引用">❝</button>
+              <button type="button" data-action="codeblock" title="代码块">{ }</button>
+              <button type="button" data-action="table" title="表格">▦</button>
             </div>
           </div>
           <textarea id="editor" spellcheck="false" aria-label="Markdown 文本"></textarea>
@@ -44,10 +60,20 @@
         <section class="pane preview-pane">
           <div class="pane-head">
             <h2>预览</h2>
-            <label class="toggle">
-              <input type="checkbox" id="paperToggle" checked />
-              <span>纸张</span>
-            </label>
+            <div class="preview-controls">
+              <label class="style-control">
+                <span>排版</span>
+                <select id="styleSelect" aria-label="预览排版">
+                  <option value="editorial">清雅</option>
+                  <option value="academic">学术</option>
+                  <option value="compact">简洁</option>
+                </select>
+              </label>
+              <label class="toggle">
+                <input type="checkbox" id="paperToggle" checked />
+                <span>纸张</span>
+              </label>
+            </div>
           </div>
           <div class="preview-stage">
             <article id="preview" class="document paper"></article>
@@ -57,6 +83,7 @@
     </main>
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <input type="file" id="fileInput" accept=".md,.markdown,.txt,text/markdown,text/plain" hidden />
 
     <script src="./vendor/katex/katex.min.js"></script>
     <script src="./vendor/html-to-image/html-to-image.js"></script>
